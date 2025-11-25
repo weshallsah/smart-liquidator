@@ -21,9 +21,9 @@ import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 import {IERC20} from "@openzeppelin/contracts/interfaces/IERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
-import "../adaptor/IAdaptor.sol";
-import "../contracts/Vault.sol";
-import "./ProtocolRegistry.sol";
+import {IAdaptor} from "../adaptor/IAdaptor.sol";
+import {Vault} from "../contracts/Vault.sol";
+import {ProtocolRegistry} from "./ProtocolRegistry.sol";
 
 contract YieldRouter is EIP712, Ownable {
     using ECDSA for bytes32;
@@ -49,7 +49,7 @@ contract YieldRouter is EIP712, Ownable {
     event RelayerSet(address indexed relayer);
     event RegistryUpdated(address indexed registry);
 
-    constructor(ProtocolRegistry _registry, Vault _vault) EIP712("YieldRouter", "1") {
+    constructor(ProtocolRegistry _registry, Vault _vault) Ownable(msg.sender) EIP712("YieldRouter", "1") {
         require(address(_registry) != address(0), "zero registry");
         require(address(_vault) != address(0), "zero vault");
         registry = _registry;
@@ -67,6 +67,18 @@ contract YieldRouter is EIP712, Ownable {
         require(address(_registry) != address(0), "zero registry");
         registry = _registry;
         emit RegistryUpdated(address(_registry));
+    }
+
+    /// @notice Public wrapper for testing - exposes _hashMove
+    function hashMovePublic(
+        address signer,
+        address fromAdaptor,
+        address toAdaptor,
+        uint256 amount,
+        uint256 deadline,
+        uint256 nonce
+    ) external view virtual returns (bytes32) {
+        return _hashMove(signer, fromAdaptor, toAdaptor, amount, deadline, nonce);
     }
 
     /* ========== SIGNATURE HELPERS ========== */
@@ -167,5 +179,30 @@ contract YieldRouter is EIP712, Ownable {
         emit MoveExecuted(signer, fromAdaptor, toAdaptor, amount, nonce, txRef);
 
         return txRef;
+    }
+
+    /* ========== REDEEM ========== */
+
+    /// @notice Redeem funds from an adaptor (withdraw back to vault or user)
+    /// @param adaptor The adaptor to withdraw from
+    /// @param amount Amount to withdraw
+    /// @param recipient Where to send the withdrawn funds (typically vault or user)
+    function redeem(address adaptor, uint256 amount, address recipient) external onlyOwner {
+        require(registry.isAdaptor(adaptor), "YieldRouter: adaptor not registered");
+        require(amount > 0, "YieldRouter: zero amount");
+        require(recipient != address(0), "YieldRouter: zero recipient");
+
+        IAdaptor(adaptor).withdrawTo(recipient, amount);
+
+        // Optionally update vault's externalAssets after redemption
+        // vault.updateExternalAssets(newTotal);
+    }
+
+    /// @notice Simplified redeem - withdraws to this router contract
+    function redeem(address adaptor, uint256 amount) external onlyOwner {
+        require(registry.isAdaptor(adaptor), "YieldRouter: adaptor not registered");
+        require(amount > 0, "YieldRouter: zero amount");
+
+        IAdaptor(adaptor).withdrawTo(address(this), amount);
     }
 }

@@ -1,126 +1,81 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.30;
+pragma solidity ^0.8.20;
+
+/**
+ * @title AaveAdaptor (Polygon Amoy Aave v3)
+ * @notice Integrates your YieldRouter with Aave v3 lending pool.
+ *         Implements: depositFrom(), withdrawTo(), totalAssets()
+ *
+ *         Adaptor Pattern:
+ *          - Withdraw: adaptor withdraws from Aave and transfers underlying to router
+ *          - Deposit: router approves adaptor, adaptor pulls tokens and supplies into Aave
+ */
 
 import {IAdaptor} from "./IAdaptor.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20} from "@openzeppelin/contracts/interfaces/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-/// @notice Minimal Aave Pool interface (supply/withdraw signatures)
-interface IAavePool {
+interface IPool {
     function supply(address asset, uint256 amount, address onBehalfOf, uint16 referralCode) external;
     function withdraw(address asset, uint256 amount, address to) external returns (uint256);
 }
 
-/// @title AaveAdapter
-/// @notice Adapter to deposit/withdraw from Aave (v3 compatible signatures)
-contract AaveAdapter is IAdaptor, Ownable, ReentrancyGuard {
+contract AaveAdaptor is IAdaptor {
     using SafeERC20 for IERC20;
 
-    /// @notice Aave pool contract (e.g., Aave V3 pool address)
-    address public pool;
+    address public immutable override asset; // underlying asset (e.g. USDC)
+    IPool public immutable lendingPool; // Aave v3 Pool
+    address public immutable aToken; // corresponding aToken
 
-    /// @notice Allowed callers (SmartWallets / VaultRouter / YieldRouter)
-    mapping(address => bool) public allowedCaller;
+    constructor(address _asset, address _pool, address _aToken) {
+        require(_asset != address(0), "AaveAdaptor: invalid asset");
+        require(_pool != address(0), "AaveAdaptor: invalid pool");
+        require(_aToken != address(0), "AaveAdaptor: invalid aToken");
 
-    event Invested(address indexed caller, address indexed token, uint256 amount, address indexed onBehalf);
-    event Divested(address indexed caller, address indexed token, uint256 amount, address indexed to);
-    event Harvested(address indexed caller, address indexed token, uint256 amount);
-    event AllowedCallerSet(address indexed who, bool allowed);
-    event PoolSet(address indexed pool);
-
-    constructor(address _pool) {
-        require(_pool != address(0), "AaveAdapter: zero pool");
-        pool = _pool;
+        asset = _asset;
+        lendingPool = IPool(_pool);
+        aToken = _aToken;
     }
 
-    modifier onlyAllowed() {
-        require(allowedCaller[msg.sender] || msg.sender == owner(), "AaveAdapter: caller-not-allowed");
-        _;
+    /**
+     * @notice Deposit underlying into Aave v3
+     * @dev Router transfers underlying to this adaptor,
+     *      so adaptor must pull the tokens via transferFrom.
+     */
+    function depositFrom(address sender, uint256 amount) external override {
+        require(amount > 0, "AaveAdaptor: zero amount");
+
+        // Pull tokens from the router (or sender)
+        IERC20(asset).safeTransferFrom(sender, address(this), amount);
+
+        // Approve lending pool
+        IERC20(asset).safeIncreaseAllowance(address(lendingPool), 0);
+        IERC20(asset).safeIncreaseAllowance(address(lendingPool), amount);
+
+        // Supply into Aave
+        lendingPool.supply(asset, amount, address(this), 0);
+
+        emit Deposited(sender, amount, block.timestamp);
     }
 
-    /// @notice Set new Aave pool address
-    function setPool(address _pool) external onlyOwner {
-        require(_pool != address(0), "AaveAdapter: zero pool");
-        pool = _pool;
-        emit PoolSet(_pool);
+    /**
+     * @notice Withdraw underlying from Aave v3
+     * @dev Sends funds into `recipient` (router)
+     */
+    function withdrawTo(address recipient, uint256 amount) external override {
+        require(recipient != address(0), "AaveAdaptor: zero recipient");
+        require(amount > 0, "AaveAdaptor: zero amount");
+
+        // Withdraw from Aave directly to router
+        lendingPool.withdraw(asset, amount, recipient);
+
+        emit Withdrawn(recipient, amount, block.timestamp);
     }
 
-    /// @notice Set allowed caller (SmartWallets, VaultRouter, etc.)
-    function setAllowedCaller(address who, bool allowed) external onlyOwner {
-        allowedCaller[who] = allowed;
-        emit AllowedCallerSet(who, allowed);
-    }
-
-    /// @notice Invest `amount` of `token` into Aave on behalf of `onBehalf`.
-    /// @dev Caller must have transferred `amount` of `token` to this adapter before calling.
-    /// @param token Underlying token address (e.g., USDC)
-    /// @param amount Amount of underlying present in adapter to supply
-    /// @param data ABI-encoded extra params; expected: abi.encode(address onBehalf)
-    function invest(address token, uint256 amount, bytes calldata data) external override nonReentrant onlyAllowed {
-        require(amount > 0, "AaveAdapter: zero amount");
-        require(pool != address(0), "AaveAdapter: pool-not-set");
-
-        address onBehalf = _decodeRecipientOrDefault(data, msg.sender);
-
-        // Approve pool
-        IERC20(token).safeApprove(pool, 0); // reset
-        IERC20(token).safeApprove(pool, amount);
-
-        // Call Aave supply - pulls tokens from adapter and credits `onBehalf`
-        IAavePool(pool).supply(token, amount, onBehalf, 0);
-
-        // reset approval (optional but safer)
-        IERC20(token).safeApprove(pool, 0);
-
-        emit Invested(msg.sender, token, amount, onBehalf);
-    }
-
-    /// @notice Withdraw `amount` of `token` from Aave and send underlying to `to`.
-    /// @param token Underlying token address
-    /// @param amount Amount to withdraw (use type(uint256).max to withdraw all)
-    /// @param data ABI-encoded extra params; expected: abi.encode(address to)
-    function divest(address token, uint256 amount, bytes calldata data) external override nonReentrant onlyAllowed {
-        require(pool != address(0), "AaveAdapter: pool-not-set");
-
-        address to = _decodeRecipientOrDefault(data, msg.sender);
-
-        // withdraw returns the amount withdrawn
-        uint256 withdrawn = IAavePool(pool).withdraw(token, amount, to);
-
-        emit Divested(msg.sender, token, withdrawn, to);
-    }
-
-    /// @notice Harvest rewards (if configured). For Aave this depends on incentives contract.
-    /// Currently a no-op placeholder (returns 0). Extend if you wire incentives.
-    function harvest(
-        address token,
-        bytes calldata /*data*/
-    )
-        external
-        override
-        nonReentrant
-        onlyAllowed
-        returns (uint256)
-    {
-        // Implement reward claiming (stkAAVE/other) if you wire Aave incentives contract.
-        // Placeholder: return 0 until you implement reward logic.
-        emit Harvested(msg.sender, token, 0);
-        return 0;
-    }
-
-    /// @notice Rescue accidental ERC20 sent to this adapter
-    function rescueERC20(address token, address to, uint256 amount) external onlyOwner {
-        IERC20(token).safeTransfer(to, amount);
-    }
-
-    /// @dev Helper to decode recipient from calldata or default to caller
-    function _decodeRecipientOrDefault(bytes calldata data, address defaultAddr) internal pure returns (address) {
-        if (data.length >= 32) {
-            // decode single address
-            return abi.decode(data, (address));
-        }
-        return defaultAddr;
+    /**
+     * @notice Returns total underlying assets managed by this adaptor (in Aave)
+     */
+    function totalAssets() external view override returns (uint256) {
+        return IERC20(aToken).balanceOf(address(this));
     }
 }

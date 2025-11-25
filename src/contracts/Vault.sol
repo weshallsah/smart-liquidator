@@ -32,7 +32,11 @@ contract Vault is ERC4626, Ownable {
     /// @param _asset underlying ERC20 token (e.g. USDC)
     /// @param _name vault share token name
     /// @param _symbol vault share token symbol
-    constructor(IERC20 _asset, string memory _name, string memory _symbol) ERC20(_name, _symbol) ERC4626(_asset) {}
+    constructor(IERC20 _asset, string memory _name, string memory _symbol)
+        Ownable(msg.sender)
+        ERC20(_name, _symbol)
+        ERC4626(_asset)
+    {}
 
     /* ========== MODIFIERS ========== */
 
@@ -99,12 +103,12 @@ contract Vault is ERC4626, Ownable {
 
     /// @notice Hook called after deposits (kept empty to allow router/adaptors to manage funds)
     /// @dev If you want automatic on-deposit actions, implement here.
-    function _afterDeposit(uint256 assets, uint256) internal virtual override {
+    function _afterDeposit(uint256 assets, uint256) internal {
         // intentionally empty — router will decide where to allocate funds
     }
 
     /// @notice Hook called before withdraw (kept empty; router must ensure liquidity)
-    function _beforeWithdraw(uint256 assets, uint256) internal virtual override {
+    function _beforeWithdraw(uint256 assets, uint256) internal {
         // intentionally empty — router is responsible to ensure liquidity or withdraw from adaptors
     }
 

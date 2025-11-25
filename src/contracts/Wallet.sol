@@ -16,6 +16,7 @@ import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {IERC20} from "@openzeppelin/contracts/interfaces/IERC20.sol";
 
 interface IVault {
+    function asset() external view returns (address);
     function deposit(uint256 amount, address to) external returns (uint256 shares);
     function withdraw(uint256 shares, address to) external returns (uint256 amount);
 }
@@ -23,9 +24,9 @@ interface IVault {
 contract Wallet {
     using ECDSA for bytes32;
 
-    address public owner;        // the user
-    address public relayer;      // trusted relayer (your x402 server)
-    uint256 public nonce;        // meta-tx nonce for replay protection
+    address public owner; // the user
+    address public relayer; // trusted relayer (your x402 server)
+    uint256 public nonce; // meta-tx nonce for replay protection
 
     event Executed(address indexed signer, bytes data, uint256 nonce);
     event OwnerChanged(address indexed oldOwner, address indexed newOwner);
@@ -56,9 +57,8 @@ contract Wallet {
 
     /* ============= META-TX EXECUTION (EIP-712 like) ============= */
 
-    bytes32 public constant META_TX_TYPEHASH = keccak256(
-        "MetaTx(address target,bytes data,uint256 value,uint256 nonce,uint256 deadline)"
-    );
+    bytes32 public constant META_TX_TYPEHASH =
+        keccak256("MetaTx(address target,bytes data,uint256 value,uint256 nonce,uint256 deadline)");
 
     /// @notice execute any call on behalf of the user IF signed with valid EIP-712 signature
     /// @dev relayer or TEE agent calls this, passing user signature
@@ -73,20 +73,9 @@ contract Wallet {
         require(msg.sender == relayer, "Not authorized relayer");
 
         // reconstruct signed payload
-        bytes32 structHash = keccak256(
-            abi.encode(
-                META_TX_TYPEHASH,
-                target,
-                keccak256(data),
-                value,
-                nonce,
-                deadline
-            )
-        );
+        bytes32 structHash = keccak256(abi.encode(META_TX_TYPEHASH, target, keccak256(data), value, nonce, deadline));
 
-        bytes32 digest = keccak256(
-            abi.encodePacked("\x19Ethereum Signed Message:\n32", structHash)
-        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", structHash));
 
         address recovered = digest.recover(signature);
         require(recovered == owner, "Invalid signer");

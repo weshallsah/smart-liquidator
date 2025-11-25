@@ -9,7 +9,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 /// @dev Simple `new Wallet(owner)` deployment. For gas-optimizations we can switch to
 ///      minimal proxies (Clones) later. This factory is ownerless / open: anyone can call
 ///      createWallet for themselves or for other users (useful for onboarding UX).
-contract WalletFactory is Ownable {
+contract WalletFactory {
     /// @notice owner => wallet address
     mapping(address => address) public wallets;
 
@@ -17,6 +17,7 @@ contract WalletFactory is Ownable {
     address[] public allWallets;
 
     event WalletCreated(address indexed owner, address indexed wallet);
+
 
     /// @notice create a wallet for msg.sender if not exists
     function createWallet() external returns (address walletAddr) {
@@ -47,15 +48,4 @@ contract WalletFactory is Ownable {
         return allWallets.length;
     }
 
-    /// @notice admin function: in case of emergencies, owner can replace the wallet mapping for an address
-    /// @dev Use carefully — admins can change pointers to wallets. Intended for recovery/migration flows.
-    function adminSetWallet(address owner, address walletAddr) external onlyOwner {
-        require(owner != address(0), "WalletFactory: zero owner");
-        require(walletAddr != address(0), "WalletFactory: zero wallet");
-
-        wallets[owner] = walletAddr;
-
-        // If walletAddr is new, push to allWallets (best-effort, may duplicate)
-        allWallets.push(walletAddr);
-    }
 }

@@ -25,6 +25,8 @@ contract ProtocolRegistry is Ownable {
     event AdaptorAdded(address adaptor);
     event AdaptorRemoved(address adaptor);
 
+    constructor()  Ownable(msg.sender){}
+
     /**
      * @notice Add a new adaptor to the registry
      * @param adaptor address of the adaptor contract
