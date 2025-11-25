@@ -25,7 +25,7 @@ contract Wallet {
     using ECDSA for bytes32;
 
     address public owner; // the user
-    address public relayer; // trusted relayer (your x402 server)
+    address public relayer; // trusted relayer (your x402 server) 712 
     uint256 public nonce; // meta-tx nonce for replay protection
 
     event Executed(address indexed signer, bytes data, uint256 nonce);
